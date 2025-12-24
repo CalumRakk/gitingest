@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import shlex
 from typing import Iterable
 
 from gitingest.utils.ignore_patterns import DEFAULT_IGNORE_PATTERNS
@@ -48,26 +49,52 @@ def process_patterns(
 def _parse_patterns(patterns: str | Iterable[str]) -> set[str]:
     """Normalize a collection of file or directory patterns.
 
+    Processes strings or iterables, supporting comma and whitespace as delimiters.
+    Uses a shell-like parser to respect quotes, allowing spaces and commas
+    within filenames (e.g., '"file, with space.txt"').
+
     Parameters
     ----------
     patterns : str | Iterable[str]
-        One pattern string or an iterable of pattern strings. Each pattern may contain multiple comma- or
-        whitespace-separated sub-patterns, e.g. "src/*, tests *.md".
+        One or more pattern strings. Patterns can be separated by commas or
+        spaces. Use quotes for patterns containing spaces.
 
     Returns
     -------
     set[str]
-        Normalized patterns with Windows back-slashes converted to forward-slashes and duplicates removed.
+        A set of normalized patterns with backslashes converted to forward
+        slashes and duplicates removed.
+
+    Examples
+    --------
+    >>> _parse_patterns('*.py, "folder name/*"')
+    {'*.py', 'folder name/*'}
 
     """
     # Treat a lone string as the iterable [string]
     if isinstance(patterns, str):
         patterns = [patterns]
 
-    # Flatten, split on commas/whitespace, strip empties, normalise slashes
-    return {
-        part.replace("\\", "/")
-        for pat in patterns
-        for part in _PATTERN_SPLIT_RE.split(pat.strip())
-        if part  # discard empty tokens
-    }
+    normalized_patterns = set()
+
+    for pat in patterns:
+        if not pat or not isinstance(pat, str):
+            continue
+
+        comma_parts = pat.split(",")
+        for p in comma_parts:
+            stripped_part = p.strip()
+            if not stripped_part:
+                continue
+
+            try:
+                # posix=True It removes external quotes and handles escapes.
+                sub_parts = shlex.split(stripped_part, posix=True)
+            except ValueError:
+                sub_parts = _PATTERN_SPLIT_RE.split(stripped_part)
+
+            for sp in sub_parts:
+                if sp:
+                    normalized_patterns.add(sp.replace("\\", "/"))
+
+    return normalized_patterns
