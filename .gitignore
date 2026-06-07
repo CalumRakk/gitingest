@@ -44,3 +44,4 @@ digest.txt
 .env
 
 .project_context
+tests/

@@ -1,6 +1,6 @@
 click>=8.0.0
 loguru>=0.7.0
 pathspec>=0.12.1
-pydantic
-python-dotenv
+pydantic>=2.14.0a1
+python-dotenv>=1.2.2
 tiktoken>=0.7.0
