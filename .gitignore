@@ -42,3 +42,5 @@ digest.txt
 
 # Environment variables
 .env
+
+.project_context

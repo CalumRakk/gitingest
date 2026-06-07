@@ -1,7 +1,0 @@
--r requirements.txt
-eval-type-backport
-pre-commit
-pytest
-pytest-asyncio
-pytest-cov
-pytest-mock
