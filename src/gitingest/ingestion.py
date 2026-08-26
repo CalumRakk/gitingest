@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from pathspec import PathSpec
+
 from gitingest.config import MAX_DIRECTORY_DEPTH, MAX_FILES, MAX_TOTAL_SIZE_BYTES
 from gitingest.output_formatter import format_node
 from gitingest.schemas import FileSystemNode, FileSystemNodeType, FileSystemStats
@@ -28,11 +30,14 @@ def ingest_query(query: IngestionQuery) -> tuple[str, str, str]:
         },
     )
 
-    # Consolidación de la fuente de verdad para exclusiones por defecto
+    # Consolidación de exclusiones por defecto
     if query.ignore_patterns is None:
         query.ignore_patterns = DEFAULT_IGNORE_PATTERNS.copy()
     else:
         query.ignore_patterns.update(DEFAULT_IGNORE_PATTERNS)
+
+    ignore_spec = PathSpec.from_lines("gitwildmatch", query.ignore_patterns) if query.ignore_patterns else None
+    include_spec = PathSpec.from_lines("gitwildmatch", query.include_patterns) if query.include_patterns else None
 
     root_node = FileSystemNode(
         name=query.slug,
@@ -42,7 +47,6 @@ def ingest_query(query: IngestionQuery) -> tuple[str, str, str]:
     )
     stats = FileSystemStats()
 
-    # Si no se definieron targets virtuales, creamos el target por defecto (backward compatibility)
     targets = query.targets
     if not targets:
         from gitingest.schemas.ingestion import VirtualTarget
@@ -58,11 +62,10 @@ def ingest_query(query: IngestionQuery) -> tuple[str, str, str]:
     for target in targets:
         phys_path = target.physical_path
         if not phys_path.exists():
-            logger.warning(f"La ruta del target no existe físicamente: {phys_path}")
+            logger.warning(f"Path does not exist: {phys_path}")
             continue
 
         if target.is_file or phys_path.is_file():
-            # Procesado de un archivo específico
             if target.virtual_alias and target.virtual_alias != ".":
                 virtual_path_str = (Path(target.virtual_alias) / phys_path.name).as_posix()
             else:
@@ -82,18 +85,18 @@ def ingest_query(query: IngestionQuery) -> tuple[str, str, str]:
             root_node.children.append(file_node)
             root_node.size += file_node.size
             root_node.file_count += 1
-        # Procesado de un directorio
+
         elif target.virtual_alias == ".":
-            # Mezclar contenidos en la raíz del contexto unificado
             _process_node(
                 node=root_node,
                 query=query,
                 stats=stats,
                 base_path=phys_path,
                 virtual_prefix=".",
+                ignore_spec=ignore_spec,
+                include_spec=include_spec,
             )
         else:
-            # Encapsular bajo un nodo con el nombre del alias virtual
             dir_node = FileSystemNode(
                 name=target.virtual_alias,
                 type=FileSystemNodeType.DIRECTORY,
@@ -107,6 +110,8 @@ def ingest_query(query: IngestionQuery) -> tuple[str, str, str]:
                 stats=stats,
                 base_path=phys_path,
                 virtual_prefix=target.virtual_alias,
+                ignore_spec=ignore_spec,
+                include_spec=include_spec,
             )
             if dir_node.children:
                 root_node.children.append(dir_node)
@@ -124,19 +129,19 @@ def _process_node(
     stats: FileSystemStats,
     base_path: Path,
     virtual_prefix: str,
+    ignore_spec: PathSpec | None = None,
+    include_spec: PathSpec | None = None,
 ) -> None:
     if limit_exceeded(stats, depth=node.depth):
         return
 
     for sub_path in node.path.iterdir():
-        # Evaluamos ignores utilizando la ruta física base de este sub-árbol
-        if query.ignore_patterns and _should_exclude(sub_path, base_path, query.ignore_patterns):
+        if ignore_spec and _should_exclude(sub_path, base_path, ignore_spec):
             continue
 
-        if query.include_patterns and not _should_include(sub_path, base_path, query.include_patterns):
+        if include_spec and not _should_include(sub_path, base_path, include_spec):
             continue
 
-        # Construcción dinámica de la ruta virtual del archivo o carpeta
         rel_path = sub_path.relative_to(base_path)
         if virtual_prefix and virtual_prefix != ".":
             virtual_path_str = (Path(virtual_prefix) / rel_path).as_posix()
@@ -197,6 +202,8 @@ def _process_node(
                 stats=stats,
                 base_path=base_path,
                 virtual_prefix=virtual_prefix,
+                ignore_spec=ignore_spec,
+                include_spec=include_spec,
             )
 
             if not child_directory_node.children:

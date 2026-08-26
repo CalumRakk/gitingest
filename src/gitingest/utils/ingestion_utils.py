@@ -10,60 +10,29 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
-def _should_include(path: Path, base_path: Path, include_patterns: set[str]) -> bool:
-    """Return ``True`` if ``path`` matches any of ``include_patterns``.
-
-    Parameters
-    ----------
-    path : Path
-        The absolute path of the file or directory to check.
-
-    base_path : Path
-        The base directory from which the relative path is calculated.
-
-    include_patterns : set[str]
-        A set of patterns to check against the relative path.
-
-    Returns
-    -------
-    bool
-        ``True`` if the path matches any of the include patterns, ``False`` otherwise.
-
-    """
+def _should_include(path: Path, base_path: Path, spec: PathSpec) -> bool:
+    """Return ``True`` if ``path`` matches the include specification."""
     rel_path = _relative_or_none(path, base_path)
-    if rel_path is None:  # outside repo → do *not* include
+    if rel_path is None:
         return False
-    if path.is_dir():  # keep directories so children are visited
+    if path.is_dir():
         return True
 
-    spec = PathSpec.from_lines("gitwildmatch", include_patterns)
-    return spec.match_file(str(rel_path))
+    rel_path_str = rel_path.as_posix()
+    return spec.match_file(rel_path_str)
 
 
-def _should_exclude(path: Path, base_path: Path, ignore_patterns: set[str]) -> bool:
-    """Return ``True`` if ``path`` matches any of ``ignore_patterns``.
-
-    Parameters
-    ----------
-    path : Path
-        The absolute path of the file or directory to check.
-    base_path : Path
-        The base directory from which the relative path is calculated.
-    ignore_patterns : set[str]
-        A set of patterns to check against the relative path.
-
-    Returns
-    -------
-    bool
-        ``True`` if the path matches any of the ignore patterns, ``False`` otherwise.
-
-    """
+def _should_exclude(path: Path, base_path: Path, spec: PathSpec) -> bool:
+    """Return ``True`` if ``path`` matches the ignore specification."""
     rel_path = _relative_or_none(path, base_path)
-    if rel_path is None:  # outside repo → already "excluded"
+    if rel_path is None:
         return True
 
-    spec = PathSpec.from_lines("gitwildmatch", ignore_patterns)
-    return spec.match_file(str(rel_path))
+    rel_path_str = rel_path.as_posix()
+    if path.is_dir():
+        rel_path_str += "/"
+
+    return spec.match_file(rel_path_str)
 
 
 def _relative_or_none(path: Path, base: Path) -> Path | None:
