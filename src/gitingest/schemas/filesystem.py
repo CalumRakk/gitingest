@@ -50,6 +50,8 @@ class FileSystemNode:  # pylint: disable=too-many-instance-attributes
     dir_count: int = 0
     depth: int = 0
     is_partial: bool = False
+    is_excluded: bool = False
+    is_partially_excluded: bool = False
     children: list[FileSystemNode] = field(default_factory=list)
     _cached_content: str | None = field(default=None, init=False, repr=False)
 
@@ -118,6 +120,12 @@ class FileSystemNode:  # pylint: disable=too-many-instance-attributes
 
         if self.type == FileSystemNodeType.SYMLINK:
             return ""
+
+        if self.is_excluded:
+            self._cached_content = (
+                "[Contenido omitido deliberadamente para ahorrar contexto. El archivo existe en esta ruta.]"
+            )
+            return self._cached_content
 
         if self.path.suffix == ".ipynb":
             return self._handle_notebook()

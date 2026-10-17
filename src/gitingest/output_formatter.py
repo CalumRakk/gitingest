@@ -164,10 +164,16 @@ def _create_tree_structure(
     display_name = node.name
     if node.type == FileSystemNodeType.DIRECTORY:
         display_name += "/"
+        if getattr(node, "is_excluded", False):
+            display_name += " (excluido)"
+        elif getattr(node, "is_partially_excluded", False):
+            display_name += " (resto excluido)"
     elif node.type == FileSystemNodeType.SYMLINK:
         display_name += " -> " + readlink(node.path).name
     elif getattr(node, "is_partial", False):
         display_name += " (parcial)"
+    elif getattr(node, "is_excluded", False):
+        display_name += " (excluido)"
 
     tree_str += f"{prefix}{current_prefix}{display_name}\n"
 

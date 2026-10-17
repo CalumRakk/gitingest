@@ -48,6 +48,7 @@ class IngestionQuery(BaseModel):
     type: str | None = None
     max_file_size: int = Field(default=MAX_FILE_SIZE)
     ignore_patterns: set[str] = Field(default_factory=set)
+    exclude_patterns: set[str] = Field(default_factory=set)
     include_patterns: set[str] | None = None
 
     user_name: Optional[str] = None
