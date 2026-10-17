@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from gitingest.utils.compat_func import readlink
 from gitingest.utils.file_utils import _decodes, _get_preferred_encodings, _read_chunk
 from gitingest.utils.notebook import process_notebook
+from gitingest.utils.tag_utils import extract_project_context_tags
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -48,7 +49,9 @@ class FileSystemNode:  # pylint: disable=too-many-instance-attributes
     file_count: int = 0
     dir_count: int = 0
     depth: int = 0
+    is_partial: bool = False
     children: list[FileSystemNode] = field(default_factory=list)
+    _cached_content: str | None = field(default=None, init=False, repr=False)
 
     def sort_children(self) -> None:
         """Sort the children nodes of a directory according to a specific order.
@@ -104,58 +107,52 @@ class FileSystemNode:  # pylint: disable=too-many-instance-attributes
         return "\n".join(parts) + "\n\n"
 
     @property
-    def content(self) -> str:  # pylint: disable=too-many-return-statements
-        """Return file content (if text / notebook) or an explanatory placeholder.
+    def content(self) -> str:
+        """Return file content (if text / notebook) or an explanatory placeholder."""
+        if self._cached_content is not None:
+            return self._cached_content
 
-        Heuristically decides whether the file is text or binary by decoding a small chunk of the file
-        with multiple encodings and checking for common binary markers.
-
-        Returns
-        -------
-        str
-            The content of the file, or an error message if the file could not be read.
-
-        Raises
-        ------
-        ValueError
-            If the node is a directory.
-
-        """
         if self.type == FileSystemNodeType.DIRECTORY:
             msg = "Cannot read content of a directory node"
             raise ValueError(msg)
 
         if self.type == FileSystemNodeType.SYMLINK:
-            return ""  # TODO: are we including the empty content of symlinks?
+            return ""
 
-        if self.path.suffix == ".ipynb":  # Notebook
-            try:
-                return process_notebook(self.path)
-            except Exception as exc:
-                return f"Error processing notebook: {exc}"
+        if self.path.suffix == ".ipynb":
+            return self._handle_notebook()
 
+        return self._handle_regular_file()
+
+    def _handle_notebook(self) -> str:
+        try:
+            self._cached_content = process_notebook(self.path)
+            return self._cached_content
+        except Exception as exc:
+            return f"Error processing notebook: {exc}"
+
+    def _handle_regular_file(self) -> str:
         chunk = _read_chunk(self.path)
-
         if chunk is None:
             return "Error reading file"
-
         if chunk == b"":
             return "[Empty file]"
-
         if not _decodes(chunk, "utf-8"):
             return "[Binary file]"
 
-        # Find the first encoding that decodes the sample
-        good_enc: str | None = next(
+        good_enc = next(
             (enc for enc in _get_preferred_encodings() if _decodes(chunk, encoding=enc)),
             None,
         )
-
         if good_enc is None:
             return "Error: Unable to decode file with available encodings"
 
         try:
             with self.path.open(encoding=good_enc) as fp:
-                return fp.read()
+                raw_text = fp.read()
+            parsed_text, is_partial = extract_project_context_tags(raw_text)
+            self.is_partial = is_partial
+            self._cached_content = parsed_text
+            return self._cached_content
         except (OSError, UnicodeDecodeError) as exc:
             return f"Error reading file with {good_enc!r}: {exc}"

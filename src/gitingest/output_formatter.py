@@ -45,6 +45,8 @@ def format_node(node: FileSystemNode, query: IngestionQuery) -> tuple[str, str, 
     is_single_file = node.type == FileSystemNodeType.FILE
     summary = _create_summary_prefix(query, single_file=is_single_file)
 
+    content = _gather_file_contents(node)
+
     if node.type == FileSystemNodeType.DIRECTORY:
         summary += f"Files analyzed: {node.file_count}\n"
     elif node.type == FileSystemNodeType.FILE:
@@ -52,8 +54,6 @@ def format_node(node: FileSystemNode, query: IngestionQuery) -> tuple[str, str, 
         summary += f"Lines: {len(node.content.splitlines()):,}\n"
 
     tree = "Directory structure:\n" + _create_tree_structure(query, node=node)
-
-    content = _gather_file_contents(node)
 
     token_estimate = _format_token_count(tree + content)
     if token_estimate:
@@ -156,18 +156,18 @@ def _create_tree_structure(
 
     """
     if not node.name:
-        # If no name is present, use the slug as the top-level directory name
         node.name = query.slug
 
     tree_str = ""
     current_prefix = "└── " if is_last else "├── "
 
-    # Indicate directories with a trailing slash
     display_name = node.name
     if node.type == FileSystemNodeType.DIRECTORY:
         display_name += "/"
     elif node.type == FileSystemNodeType.SYMLINK:
         display_name += " -> " + readlink(node.path).name
+    elif getattr(node, "is_partial", False):
+        display_name += " (parcial)"
 
     tree_str += f"{prefix}{current_prefix}{display_name}\n"
 
