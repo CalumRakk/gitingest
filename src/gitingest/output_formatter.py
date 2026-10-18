@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import ssl
+import time
 from typing import TYPE_CHECKING
 
 import requests.exceptions
@@ -15,6 +17,8 @@ from gitingest.utils.logging_config import get_logger
 if TYPE_CHECKING:
     from gitingest.schemas import IngestionQuery
 
+
+diag_logger = logging.getLogger("project_context.formatter")
 # Initialize logger for this module
 logger = get_logger(__name__)
 
@@ -42,10 +46,19 @@ def format_node(node: FileSystemNode, query: IngestionQuery) -> tuple[str, str, 
         A tuple containing the summary, directory structure, and file contents.
 
     """
+    t_start = time.perf_counter()
+    diag_logger.info("[FORMATTER 1/4] format_node() iniciado")
+
     is_single_file = node.type == FileSystemNodeType.FILE
     summary = _create_summary_prefix(query, single_file=is_single_file)
 
+    t_gather = time.perf_counter()
+    diag_logger.info("[FORMATTER 2/4] Leyendo contenido de archivos desde disco (_gather_file_contents)...")
     content = _gather_file_contents(node)
+    diag_logger.info(
+        f"[FORMATTER 2/4] Lectura de archivos lista en {time.perf_counter() - t_gather:.3f}s. "
+        f"Tamaño texto: {len(content):,} caracteres"
+    )
 
     if node.type == FileSystemNodeType.DIRECTORY:
         summary += f"Files analyzed: {node.file_count}\n"
@@ -53,12 +66,22 @@ def format_node(node: FileSystemNode, query: IngestionQuery) -> tuple[str, str, 
         summary += f"File: {node.name}\n"
         summary += f"Lines: {len(node.content.splitlines()):,}\n"
 
+    t_tree = time.perf_counter()
     tree = "Directory structure:\n" + _create_tree_structure(query, node=node)
+    diag_logger.info(f"[FORMATTER 3/4] Árbol de directorios creado en {time.perf_counter() - t_tree:.3f}s")
 
+    t_tok = time.perf_counter()
+    diag_logger.info("[FORMATTER 4/4] Estimando tokens con tiktoken (_format_token_count)...")
     token_estimate = _format_token_count(tree + content)
+    diag_logger.info(
+        f"[FORMATTER 4/4] Estimación de tokens lista en {time.perf_counter() - t_tok:.3f}s. "
+        f"Resultado: {token_estimate}"
+    )
+
     if token_estimate:
         summary += f"\nEstimated tokens: {token_estimate}"
 
+    diag_logger.info(f"[FORMATTER] format_node() completado en {time.perf_counter() - t_start:.3f}s")
     return summary, tree, content
 
 
@@ -199,13 +222,19 @@ def _format_token_count(text: str) -> str | None:
 
     """
     try:
+        t_bpe = time.perf_counter()
+        diag_logger.debug("[TIKTOKEN] Obteniendo encoding 'o200k_base'...")
         encoding = tiktoken.get_encoding("o200k_base")  # gpt-4o, gpt-4o-mini
+        diag_logger.debug(f"[TIKTOKEN] get_encoding listo en {time.perf_counter() - t_bpe:.3f}s")
+
+        t_enc = time.perf_counter()
+        diag_logger.debug(f"[TIKTOKEN] Ejecutando encode() en {len(text):,} caracteres...")
         total_tokens = len(encoding.encode(text, disallowed_special=()))
+        diag_logger.debug(f"[TIKTOKEN] encode() listo en {time.perf_counter() - t_enc:.3f}s ({total_tokens:,} tokens)")
     except (ValueError, UnicodeEncodeError) as exc:
         logger.warning("Failed to estimate token size", extra={"error": str(exc)})
         return None
     except (requests.exceptions.RequestException, ssl.SSLError) as exc:
-        # If network errors, skip token count estimation instead of erroring out
         logger.warning("Failed to download tiktoken model", extra={"error": str(exc)})
         return None
 

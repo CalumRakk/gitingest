@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -17,6 +19,8 @@ from gitingest.utils.logging_config import get_logger
 if TYPE_CHECKING:
     from gitingest.schemas import IngestionQuery
 
+
+diag_logger = logging.getLogger("project_context.gitingest")
 # Initialize logger for this module
 logger = get_logger(__name__)
 
@@ -85,13 +89,8 @@ def _insert_node_hierarchically(
 
 
 def ingest_query(query: IngestionQuery) -> tuple[str, str, str]:
-    logger.info(
-        "Starting file ingestion",
-        extra={
-            "slug": query.slug,
-            "max_file_size": query.max_file_size,
-        },
-    )
+    diag_logger.info(f"[GITINGEST] Iniciando ingestión para: {query.local_path}")
+    t_start = time.perf_counter()
 
     if query.ignore_patterns is None:
         query.ignore_patterns = DEFAULT_IGNORE_PATTERNS.copy()
@@ -127,6 +126,9 @@ def ingest_query(query: IngestionQuery) -> tuple[str, str, str]:
         phys_path = target.physical_path
         if not phys_path.exists() or target.is_file or phys_path.is_file():
             continue
+
+        diag_logger.info(f"[GITINGEST] Procesando target directorio: '{target.virtual_alias}' ({phys_path})")
+        t_target = time.perf_counter()
 
         if target.virtual_alias == ".":
             _process_node(
@@ -164,6 +166,11 @@ def ingest_query(query: IngestionQuery) -> tuple[str, str, str]:
                 root_node.size += dir_node.size
                 root_node.file_count += dir_node.file_count
                 root_node.dir_count += 1 + dir_node.dir_count
+
+        diag_logger.info(
+            f"[GITINGEST] Target '{target.virtual_alias}' escaneado en {time.perf_counter() - t_target:.3f}s. "
+            f"Archivos encontrados hasta ahora: {stats.total_files}"
+        )
 
     for target in targets:
         phys_path = target.physical_path
@@ -223,6 +230,11 @@ def ingest_query(query: IngestionQuery) -> tuple[str, str, str]:
             _insert_node_hierarchically(root_node, file_node, rel_file_path, base_dir)
 
     root_node.sort_children()
+    diag_logger.info(
+        f"[GITINGEST] Escaneo de disco finalizado en {time.perf_counter() - t_start:.3f}s. "
+        f"Total archivos válidos: {stats.total_files} ({stats.total_size / 1024 / 1024:.2f} MB). "
+        f"Iniciando format_node()..."
+    )
     return format_node(root_node, query=query)
 
 
@@ -243,6 +255,10 @@ def _process_node(
     whitelisted_set = whitelisted_files or set()
 
     for sub_path in node.path.iterdir():
+        if not whitelisted_set:
+            if ignore_spec and _should_exclude(sub_path, base_path, ignore_spec):
+                continue
+
         is_whitelisted = sub_path.resolve() in whitelisted_set
         has_whitelisted_child = sub_path.is_dir() and _has_whitelisted_descendant(sub_path, whitelisted_set)
 

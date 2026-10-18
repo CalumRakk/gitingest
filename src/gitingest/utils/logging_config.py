@@ -197,4 +197,4 @@ def get_logger(name: str | None = None) -> logger.__class__:
 
 
 # Initialize logging when module is imported
-configure_logging()
+# configure_logging()
