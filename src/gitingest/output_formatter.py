@@ -143,10 +143,17 @@ def _gather_file_contents(node: FileSystemNode) -> str:
 
     """
     if node.type != FileSystemNodeType.DIRECTORY:
+        if getattr(node, "suppress_content", False) or getattr(node, "is_ellipsis", False):
+            return ""
         return node.content_string
 
-    # Recursively gather contents of all files under the current directory
-    return "\n".join(_gather_file_contents(child) for child in node.children)
+    chunks = []
+    for child in node.children:
+        c = _gather_file_contents(child)
+        if c.strip():
+            chunks.append(c.strip())
+
+    return "\n\n".join(chunks) + ("\n\n" if chunks else "")
 
 
 def _create_tree_structure(
@@ -185,18 +192,21 @@ def _create_tree_structure(
     current_prefix = "└── " if is_last else "├── "
 
     display_name = node.name
-    if node.type == FileSystemNodeType.DIRECTORY:
+
+    if getattr(node, "is_ellipsis", False):
+        display_name = node.name
+
+    elif node.type == FileSystemNodeType.DIRECTORY:
         display_name += "/"
-        if getattr(node, "is_excluded", False):
-            display_name += " (excluido)"
-        elif getattr(node, "is_partially_excluded", False):
-            display_name += " (resto excluido)"
+
     elif node.type == FileSystemNodeType.SYMLINK:
         display_name += " -> " + readlink(node.path).name
+
     elif getattr(node, "is_partial", False):
-        display_name += " (parcial)"
+        display_name += " (partial)"
+
     elif getattr(node, "is_excluded", False):
-        display_name += " (excluido)"
+        display_name += " (excluded)"
 
     tree_str += f"{prefix}{current_prefix}{display_name}\n"
 

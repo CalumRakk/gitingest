@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pathspec import PathSpec
+from utils.ingestion_utils import _relative_or_none
 
 from gitingest.config import MAX_DIRECTORY_DEPTH, MAX_FILES, MAX_TOTAL_SIZE_BYTES
 from gitingest.output_formatter import format_node
@@ -23,6 +24,114 @@ if TYPE_CHECKING:
 diag_logger = logging.getLogger("project_context.gitingest")
 # Initialize logger for this module
 logger = get_logger(__name__)
+
+MAX_EXCLUDED_PREVIEW = 20
+JUNK_IGNORE_PATTERNS = {".ds_store", "thumbs.db", "desktop.ini", "__pycache__", ".git", ".pytest_cache"}
+
+
+def _matches_exclusion_rule(path: Path, base_path: Path, spec: PathSpec | None) -> bool:
+    """Checks whether a path or directory matches the context exclude rules."""
+    if not spec:
+        return False
+    if _should_exclude(path, base_path, spec):
+        return True
+
+    if path.is_dir():
+        rel = _relative_or_none(path, base_path)
+        if rel:
+            return spec.match_file((rel / "dummy_file").as_posix())
+    return False
+
+
+def _process_excluded_directory(
+    dir_node: FileSystemNode,
+    base_path: Path,
+    virtual_prefix: str,
+    stats: FileSystemStats,
+    max_preview: int = MAX_EXCLUDED_PREVIEW,
+) -> None:
+    """Safely and lazily traverse the files within an excluded folder."""
+    count = 0
+    has_more = False
+
+    try:
+        for child_path in dir_node.path.iterdir():
+            if child_path.name.lower() in JUNK_IGNORE_PATTERNS or child_path.name.endswith(".pyc"):
+                continue
+
+            if count >= max_preview:
+                has_more = True
+                break
+
+            rel_path = child_path.relative_to(base_path)
+            virtual_path_str = (
+                (Path(virtual_prefix) / rel_path).as_posix()
+                if virtual_prefix and virtual_prefix != "."
+                else rel_path.as_posix()
+            )
+
+            if child_path.is_symlink():
+                child_node = FileSystemNode(
+                    name=child_path.name,
+                    type=FileSystemNodeType.SYMLINK,
+                    path_str=virtual_path_str,
+                    path=child_path,
+                    depth=dir_node.depth + 1,
+                    is_excluded=True,
+                    suppress_content=True,
+                )
+                dir_node.children.append(child_node)
+                dir_node.file_count += 1
+                stats.total_files += 1
+                count += 1
+
+            elif child_path.is_file():
+                child_node = FileSystemNode(
+                    name=child_path.name,
+                    type=FileSystemNodeType.FILE,
+                    size=0,
+                    file_count=1,
+                    path_str=virtual_path_str,
+                    path=child_path,
+                    depth=dir_node.depth + 1,
+                    is_excluded=True,
+                    suppress_content=True,
+                )
+                dir_node.children.append(child_node)
+                dir_node.file_count += 1
+                stats.total_files += 1
+                count += 1
+
+            elif child_path.is_dir():
+                sub_dir_node = FileSystemNode(
+                    name=child_path.name,
+                    type=FileSystemNodeType.DIRECTORY,
+                    path_str=virtual_path_str,
+                    path=child_path,
+                    depth=dir_node.depth + 1,
+                    is_excluded=True,
+                )
+                dir_node.children.append(sub_dir_node)
+                dir_node.dir_count += 1
+                count += 1
+
+    except (OSError, PermissionError) as e:
+        logger.debug("Could not read excluded folder {dir_node.path}: {e}")
+
+    if has_more:
+        ellipsis_node = FileSystemNode(
+            name="... (más elementos omitidos)",
+            type=FileSystemNodeType.FILE,
+            path_str=f"{dir_node.path_str}/...",
+            path=dir_node.path,
+            depth=dir_node.depth + 1,
+            is_excluded=False,
+            suppress_content=True,
+            is_ellipsis=True,
+        )
+        dir_node.children.append(ellipsis_node)
+
+    dir_node.sort_children()
 
 
 def _has_whitelisted_descendant(dir_path: Path, whitelisted_paths: set[Path]) -> bool:
@@ -255,14 +364,15 @@ def _process_node(
     whitelisted_set = whitelisted_files or set()
 
     for sub_path in node.path.iterdir():
-        if not whitelisted_set:
-            if ignore_spec and _should_exclude(sub_path, base_path, ignore_spec):
-                continue
-
         is_whitelisted = sub_path.resolve() in whitelisted_set
         has_whitelisted_child = sub_path.is_dir() and _has_whitelisted_descendant(sub_path, whitelisted_set)
 
-        if not is_whitelisted and not has_whitelisted_child:
+        is_soft_excluded = False
+        if not is_whitelisted:
+            if _matches_exclusion_rule(sub_path, base_path, exclude_spec):
+                is_soft_excluded = True
+
+        if not is_whitelisted and not has_whitelisted_child and not is_soft_excluded:
             if ignore_spec and _should_exclude(sub_path, base_path, ignore_spec):
                 continue
 
@@ -270,15 +380,11 @@ def _process_node(
             continue
 
         rel_path = sub_path.relative_to(base_path)
-        if virtual_prefix and virtual_prefix != ".":
-            virtual_path_str = (Path(virtual_prefix) / rel_path).as_posix()
-        else:
-            virtual_path_str = rel_path.as_posix()
-
-        is_soft_excluded = False
-        if not is_whitelisted:
-            if exclude_spec and _should_exclude(sub_path, base_path, exclude_spec):
-                is_soft_excluded = True
+        virtual_path_str = (
+            (Path(virtual_prefix) / rel_path).as_posix()
+            if virtual_prefix and virtual_prefix != "."
+            else rel_path.as_posix()
+        )
 
         if sub_path.is_symlink():
             child = FileSystemNode(
@@ -287,6 +393,8 @@ def _process_node(
                 path_str=virtual_path_str,
                 path=sub_path,
                 depth=node.depth + 1,
+                is_excluded=is_soft_excluded,
+                suppress_content=is_soft_excluded,
             )
             stats.total_files += 1
             node.children.append(child)
@@ -303,6 +411,7 @@ def _process_node(
                     path=sub_path,
                     depth=node.depth + 1,
                     is_excluded=True,
+                    suppress_content=True,
                 )
                 node.children.append(child)
                 node.file_count += 1
@@ -335,36 +444,35 @@ def _process_node(
             node.file_count += 1
 
         elif sub_path.is_dir():
-            if is_soft_excluded:
-                if not has_whitelisted_child:
-                    child_directory_node = FileSystemNode(
-                        name=sub_path.name,
-                        type=FileSystemNodeType.DIRECTORY,
-                        path_str=virtual_path_str,
-                        path=sub_path,
-                        depth=node.depth + 1,
-                        is_excluded=True,
-                    )
-                    node.children.append(child_directory_node)
-                    node.dir_count += 1
-                    continue
-                else:
-                    child_directory_node = FileSystemNode(
-                        name=sub_path.name,
-                        type=FileSystemNodeType.DIRECTORY,
-                        path_str=virtual_path_str,
-                        path=sub_path,
-                        depth=node.depth + 1,
-                        is_partially_excluded=True,
-                    )
-            else:
+            if is_soft_excluded and not has_whitelisted_child:
                 child_directory_node = FileSystemNode(
                     name=sub_path.name,
                     type=FileSystemNodeType.DIRECTORY,
                     path_str=virtual_path_str,
                     path=sub_path,
                     depth=node.depth + 1,
+                    is_excluded=True,
                 )
+
+                _process_excluded_directory(
+                    dir_node=child_directory_node,
+                    base_path=base_path,
+                    virtual_prefix=virtual_prefix,
+                    stats=stats,
+                    max_preview=MAX_EXCLUDED_PREVIEW,
+                )
+                node.children.append(child_directory_node)
+                node.dir_count += 1
+                continue
+
+            child_directory_node = FileSystemNode(
+                name=sub_path.name,
+                type=FileSystemNodeType.DIRECTORY,
+                path_str=virtual_path_str,
+                path=sub_path,
+                depth=node.depth + 1,
+                is_partially_excluded=is_soft_excluded,
+            )
 
             _process_node(
                 node=child_directory_node,

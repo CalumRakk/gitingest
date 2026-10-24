@@ -52,6 +52,8 @@ class FileSystemNode:  # pylint: disable=too-many-instance-attributes
     is_partial: bool = False
     is_excluded: bool = False
     is_partially_excluded: bool = False
+    suppress_content: bool = False
+    is_ellipsis: bool = False
     children: list[FileSystemNode] = field(default_factory=list)
     _cached_content: str | None = field(default=None, init=False, repr=False)
 
@@ -77,8 +79,9 @@ class FileSystemNode:  # pylint: disable=too-many-instance-attributes
             raise ValueError(msg)
 
         def _sort_key(child: FileSystemNode) -> tuple[int, str]:
-            # returns the priority order for the sort function, 0 is first
-            # Groups: 0=README, 1=regular file, 2=hidden file, 3=regular dir, 4=hidden dir
+            if getattr(child, "is_ellipsis", False):
+                return (99, "")
+
             name = child.name.lower()
             if child.type == FileSystemNodeType.FILE:
                 if name == "readme" or name.startswith("readme."):
@@ -98,6 +101,9 @@ class FileSystemNode:  # pylint: disable=too-many-instance-attributes
             A string representation of the node's content.
 
         """
+        if self.suppress_content or self.is_ellipsis:
+            return ""
+
         parts = [
             SEPARATOR,
             f"{self.type.name}: {str(self.path_str).replace(os.sep, '/')}"
