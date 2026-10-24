@@ -24,7 +24,8 @@ diag_logger = logging.getLogger("project_context.gitingest")
 # Initialize logger for this module
 logger = get_logger(__name__)
 
-MAX_EXCLUDED_PREVIEW = 20
+MAX_EXCLUDED_TOTAL_FILES = 40
+MAX_EXCLUDED_DEPTH = 3
 JUNK_IGNORE_PATTERNS = {".ds_store", "thumbs.db", "desktop.ini", "__pycache__", ".git", ".pytest_cache"}
 
 
@@ -47,18 +48,27 @@ def _process_excluded_directory(
     base_path: Path,
     virtual_prefix: str,
     stats: FileSystemStats,
-    max_preview: int = MAX_EXCLUDED_PREVIEW,
+    budget: dict[str, int] | None = None,
+    relative_depth: int = 1,
+    max_depth: int = MAX_EXCLUDED_DEPTH,
 ) -> None:
     """Safely and lazily traverse the files within an excluded folder."""
-    count = 0
+    if budget is None:
+        budget = {"count": 0, "max": MAX_EXCLUDED_TOTAL_FILES}
+
+    count_in_this_dir = 0
+    max_per_dir = 15
     has_more = False
 
     try:
+        # Leemos los hijos del directorio
         for child_path in dir_node.path.iterdir():
+            # Omitir basura del sistema
             if child_path.name.lower() in JUNK_IGNORE_PATTERNS or child_path.name.endswith(".pyc"):
                 continue
 
-            if count >= max_preview:
+            # Si este directorio local o el presupuesto global se agota, cortamos
+            if count_in_this_dir >= max_per_dir or budget["count"] >= budget["max"]:
                 has_more = True
                 break
 
@@ -69,6 +79,7 @@ def _process_excluded_directory(
                 else rel_path.as_posix()
             )
 
+            # CASO 1: Enlace simbólico
             if child_path.is_symlink():
                 child_node = FileSystemNode(
                     name=child_path.name,
@@ -82,8 +93,10 @@ def _process_excluded_directory(
                 dir_node.children.append(child_node)
                 dir_node.file_count += 1
                 stats.total_files += 1
-                count += 1
+                count_in_this_dir += 1
+                budget["count"] += 1
 
+            # CASO 2: Archivo
             elif child_path.is_file():
                 child_node = FileSystemNode(
                     name=child_path.name,
@@ -94,13 +107,15 @@ def _process_excluded_directory(
                     path=child_path,
                     depth=dir_node.depth + 1,
                     is_excluded=True,
-                    suppress_content=True,
+                    suppress_content=True,  # No genera bloque FILE: en el contenido
                 )
                 dir_node.children.append(child_node)
                 dir_node.file_count += 1
                 stats.total_files += 1
-                count += 1
+                count_in_this_dir += 1
+                budget["count"] += 1
 
+            # CASO 3: Subdirectorio dentro de la carpeta excluida
             elif child_path.is_dir():
                 sub_dir_node = FileSystemNode(
                     name=child_path.name,
@@ -108,15 +123,29 @@ def _process_excluded_directory(
                     path_str=virtual_path_str,
                     path=child_path,
                     depth=dir_node.depth + 1,
-                    is_excluded=True,
+                    is_excluded=True,  # Recuerda: en el formateador no mostrará el tag
                 )
                 dir_node.children.append(sub_dir_node)
                 dir_node.dir_count += 1
-                count += 1
+                count_in_this_dir += 1
+
+                # RECURSIÓN CONTROLADA:
+                # Si aún tenemos margen de profundidad y presupuesto, descendemos a explorar
+                if relative_depth < max_depth and budget["count"] < budget["max"]:
+                    _process_excluded_directory(
+                        dir_node=sub_dir_node,
+                        base_path=base_path,
+                        virtual_prefix=virtual_prefix,
+                        stats=stats,
+                        budget=budget,
+                        relative_depth=relative_depth + 1,
+                        max_depth=max_depth,
+                    )
 
     except (OSError, PermissionError) as e:
-        logger.debug("Could not read excluded folder {dir_node.path}: {e}")
+        logger.debug(f"Could not read excluded folder {dir_node.path}: {e}")
 
+    # Si se superó el límite, añadimos el nodo visual de elipsis
     if has_more:
         ellipsis_node = FileSystemNode(
             name="... (más elementos omitidos)",
@@ -458,7 +487,8 @@ def _process_node(
                     base_path=base_path,
                     virtual_prefix=virtual_prefix,
                     stats=stats,
-                    max_preview=MAX_EXCLUDED_PREVIEW,
+                    relative_depth=1,
+                    max_depth=MAX_EXCLUDED_DEPTH,
                 )
                 node.children.append(child_directory_node)
                 node.dir_count += 1
