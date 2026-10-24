@@ -8,13 +8,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pathspec import PathSpec
-from utils.ingestion_utils import _relative_or_none
 
 from gitingest.config import MAX_DIRECTORY_DEPTH, MAX_FILES, MAX_TOTAL_SIZE_BYTES
 from gitingest.output_formatter import format_node
 from gitingest.schemas import FileSystemNode, FileSystemNodeType, FileSystemStats
 from gitingest.utils.ignore_patterns import DEFAULT_IGNORE_PATTERNS
-from gitingest.utils.ingestion_utils import _should_exclude, _should_include
+from gitingest.utils.ingestion_utils import _relative_or_none, _should_exclude, _should_include
 from gitingest.utils.logging_config import get_logger
 
 if TYPE_CHECKING:
