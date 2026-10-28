@@ -151,18 +151,34 @@ class FileSystemNode:  # pylint: disable=too-many-instance-attributes
             return "Error reading file"
         if chunk == b"":
             return "[Empty file]"
-        if not _decodes(chunk, "utf-8"):
-            return "[Binary file]"
 
-        good_enc = next(
-            (enc for enc in _get_preferred_encodings() if _decodes(chunk, encoding=enc)),
-            None,
-        )
-        if good_enc is None:
-            return "Error: Unable to decode file with available encodings"
+        # Detección por BOM (Identifica UTF-16 y UTF-8 con firma sin ambigüedad)
+        if chunk.startswith((b"\xff\xfe", b"\xfe\xff")):
+            good_enc = "utf-16"
+        elif chunk.startswith(b"\xef\xbb\xbf"):
+            good_enc = "utf-8-sig"
+        else:
+            # Intenta decodificar como UTF-8
+            #    (Quitamos los últimos 3 bytes del chunk para no fallar si un emoji quedó cortado en el byte 1024)
+            test_chunk = chunk[:-3] if len(chunk) > 3 else chunk
+            try:
+                test_chunk.decode("utf-8")
+                good_enc = "utf-8"
+            except UnicodeDecodeError:
+                good_enc = None
 
+            if good_enc is None:
+                # Si no es UTF-16 (con BOM) ni UTF-8, y contiene byte nulo -> ES BINARIO
+                if b"\x00" in chunk:
+                    return "[Binary file]"
+
+                # Fallback: No tiene bytes nulos pero falló UTF-8 (ej. Windows-1252 / ISO-8859-1 con tildes/eñes)
+                # cp1252 es un superset de latin-1/iso-8859-1 muy común en proyectos de Windows
+                good_enc = "cp1252"
+
+        # Lectura del archivo completo con la codificación identificada
         try:
-            with self.path.open(encoding=good_enc) as fp:
+            with self.path.open(encoding=good_enc, errors="replace") as fp:
                 raw_text = fp.read()
             parsed_text, is_partial = extract_project_context_tags(raw_text)
             self.is_partial = is_partial
